@@ -4,12 +4,16 @@ chunkvault is a distributed file storage system written in C++20. Files are spli
 
 ## Planned features
 
-- Content-defined chunking and integrity checks
+- Fixed-size 4 MiB chunking and integrity checks
 - Multi-node replication and repair
 - JWT-authenticated HTTP API for object upload, download, and listing
 - PostgreSQL metadata and Redis caching
 - Independent `storage_node` process for blob placement
 - Operational tooling, deployment manifests, and benchmarks
+
+## Design
+
+The [software design document](docs/design/SDD.md) is the narrative of goals, components, chunking, replication, and security. Component diagrams and request flows are under [docs/architecture/](docs/architecture/).
 
 ## Build
 
