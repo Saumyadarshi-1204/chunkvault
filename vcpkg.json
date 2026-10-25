@@ -1,0 +1,17 @@
+{
+  "name": "chunkvault",
+  "version-string": "0.1.0",
+  "description": "Distributed file storage system",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "drogon",
+      "features": ["postgres", "redis", "orm"]
+    },
+    "openssl",
+    "jwt-cpp",
+    "spdlog",
+    "nlohmann-json",
+    "gtest"
+  ]
+}

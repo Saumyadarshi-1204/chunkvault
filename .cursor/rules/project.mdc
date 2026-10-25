@@ -1,0 +1,18 @@
+---
+alwaysApply: true
+---
+Project: chunkvault, a distributed file storage system in C++20 using CMake, vcpkg, Drogon, PostgreSQL, Redis.
+
+Code style:
+- Modern C++20, RAII, smart pointers, no raw owning pointers. Follow the Google C++ style with clang-format.
+- Comments only where the reason is not obvious. No comments that restate the code.
+- No emojis anywhere (code, logs, docs, commit messages).
+- No placeholder text such as "TODO: implement" or tutorial-style example blocks.
+- Use clear domain names (ChunkStore, ReplicaManager), not generic ones (Helper, Utils).
+
+Engineering rules:
+- Configuration from environment variables or a config file, never hardcoded. No secrets in the repo.
+- Layers: api (controllers), services (business logic), repositories (DB access), models.
+- Every feature ships with GoogleTest unit tests under tests/.
+- Explicit error handling, correct HTTP status codes, structured logging with spdlog.
+- Small, focused changes. Do not modify unrelated files.
