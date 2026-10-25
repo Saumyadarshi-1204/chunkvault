@@ -1,0 +1,1038 @@
+openapi: 3.0.3
+info:
+  title: chunkvault API
+  version: 0.1.0
+  description: >
+    Public HTTP API for the chunkvault API server. Storage-node
+    PUT/GET/DELETE /chunks/{id} is internal and is not listed here.
+    Access tokens are JWTs (15 minutes). Send Authorization: Bearer <token>
+    unless an operation sets security to empty. Refresh tokens are hashed
+    in PostgreSQL (refresh_tokens). Roles are user and admin.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Files
+  - name: Versions
+  - name: Shares
+  - name: Admin
+  - name: Ops
+paths:
+  /health:
+    get:
+      tags: [Ops]
+      summary: Process liveness
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: Process is up. Does not prove PostgreSQL or replica quorum.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /metrics:
+    get:
+      tags: [Ops]
+      summary: Prometheus metrics
+      description: >
+        Intended for a private scrape network. No database table backs this
+        resource; values are process gauges and counters.
+      security: []
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  chunkvault_up 1
+                  chunkvault_http_requests_total{code="200"} 12
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create a user
+      security: []
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created. Same token pair as login.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Access JWT and refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate refresh token
+      description: >
+        Presents the current refresh token. Issues a new pair and stores a new
+        token_hash in the same family_id. Reuse of a prior hash revokes the family.
+      security: []
+      operationId: refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke refresh token
+      security: []
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "204":
+          description: Hash marked revoked
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /folders:
+    post:
+      tags: [Files]
+      summary: Create a folder
+      operationId: createFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFolderRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Parent folder not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/NameConflict"
+  /files:
+    get:
+      tags: [Files]
+      summary: List files and folders
+      operationId: listFiles
+      parameters:
+        - name: parent_id
+          in: query
+          description: Null or omitted lists the caller's root.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [Files]
+      summary: Upload a new file
+      description: >
+        Creates a files row (is_folder=false) and file_versions version 1.
+        The API splits the body into 4 MiB chunks, writes replicas, then
+        sets current_version_id.
+      operationId: uploadFile
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/UploadFileRequest"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/NameConflict"
+        "503":
+          $ref: "#/components/responses/InsufficientReplicas"
+  /files/{fileId}:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Files]
+      summary: Get metadata
+      operationId: getFile
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Files]
+      summary: Rename, move, or update metadata
+      description: >
+        name is rename. parent_id is move. mime_type is metadata update
+        (files only). Sibling unique indexes return 409 on collision.
+      operationId: updateFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateFileRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/NameConflict"
+    delete:
+      tags: [Files]
+      summary: Soft-delete a file or folder
+      description: Sets deleted_at. Chunk GC runs later via ref_count.
+      operationId: deleteFile
+      responses:
+        "204":
+          description: Marked deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /files/{fileId}/content:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Files]
+      summary: Download current version
+      operationId: downloadFile
+      responses:
+        "200":
+          description: Concatenated chunks of current_version_id
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Content-SHA256:
+              schema:
+                type: string
+                pattern: "^[0-9a-f]{64}$"
+        "400":
+          description: Target is a folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          description: Metadata exists but no intact replica remains
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/InsufficientReplicas"
+    post:
+      tags: [Files]
+      summary: Upload a new version
+      operationId: uploadNewVersion
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  format: binary
+                mime_type:
+                  type: string
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/InsufficientReplicas"
+  /files/{fileId}/versions:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [Versions]
+      summary: List versions
+      operationId: listVersions
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionList"
+        "400":
+          description: Target is a folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /files/{fileId}/versions/compare:
+    get:
+      tags: [Versions]
+      summary: Compare two versions
+      description: >
+        Diffs file_version_chunks ordinals and chunk ids. Does not store a
+        separate diff table.
+      operationId: compareVersions
+      parameters:
+        - $ref: "#/components/parameters/FileId"
+        - name: from_version_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: to_version_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionCompare"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /files/{fileId}/versions/{versionId}/rollback:
+    post:
+      tags: [Versions]
+      summary: Roll back to a prior version
+      description: >
+        Inserts a new file_versions row whose chunk list copies versionId,
+        increments ref_count, and points current_version_id at the new row.
+      operationId: rollbackVersion
+      parameters:
+        - $ref: "#/components/parameters/FileId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileMetadata"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /files/{fileId}/shares:
+    post:
+      tags: [Shares]
+      summary: Create a share
+      operationId: createShare
+      parameters:
+        - $ref: "#/components/parameters/FileId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateShareRequest"
+      responses:
+        "201":
+          description: Raw token is returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareCreated"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /shares/{shareId}:
+    delete:
+      tags: [Shares]
+      summary: Revoke a share
+      description: Sets revoked_at. share_permissions rows remain until CASCADE on hard delete.
+      operationId: revokeShare
+      parameters:
+        - $ref: "#/components/parameters/ShareId"
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /shares/token/{token}:
+    get:
+      tags: [Shares]
+      summary: Access a share by token
+      description: >
+        Hashes token and looks up shares.token. Public shares need no JWT.
+        Private shares require a bearer user in share_permissions, the owner,
+        or an admin.
+      operationId: getShareByToken
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ShareToken"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareAccess"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          description: Expired or revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /shares/token/{token}/content:
+    get:
+      tags: [Shares]
+      summary: Download through a share token
+      operationId: downloadShareContent
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ShareToken"
+      responses:
+        "200":
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Share target is a folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          description: Expired, revoked, or no intact replica
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/nodes:
+    get:
+      tags: [Admin]
+      summary: List storage nodes
+      description: Requires role=admin. Reads nodes including status and last_heartbeat.
+      operationId: listNodes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/nodes/{nodeId}/health:
+    get:
+      tags: [Admin]
+      summary: Node health
+      description: Requires role=admin. Combines nodes row with replica counts.
+      operationId: getNodeHealth
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeHealth"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    FileId:
+      name: fileId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    VersionId:
+      name: versionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ShareId:
+      name: shareId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ShareToken:
+      name: token
+      in: path
+      required: true
+      description: Raw share secret (not the stored hash)
+      schema:
+        type: string
+        minLength: 32
+    NodeId:
+      name: nodeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing, expired, or invalid token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Authenticated but not owner, grantee, or admin
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Unknown or soft-deleted resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NameConflict:
+      description: Live sibling already has this name
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InsufficientReplicas:
+      description: Fewer live nodes than replication_factor
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          example: validation_error
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 10
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, expires_in, token_type]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          enum: [900]
+          description: Access token lifetime in seconds (15 minutes)
+        token_type:
+          type: string
+          enum: [Bearer]
+        role:
+          type: string
+          enum: [user, admin]
+    CreateFolderRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+    UploadFileRequest:
+      type: object
+      required: [content]
+      properties:
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+          description: Defaults to the multipart filename
+        mime_type:
+          type: string
+        content:
+          type: string
+          format: binary
+    UpdateFileRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        mime_type:
+          type: string
+          nullable: true
+      minProperties: 1
+    FileMetadata:
+      type: object
+      required:
+        - id
+        - owner_id
+        - name
+        - is_folder
+        - size
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        parent_id:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+        is_folder:
+          type: boolean
+        mime_type:
+          type: string
+          nullable: true
+        size:
+          type: integer
+          format: int64
+          minimum: 0
+        current_version_id:
+          type: string
+          format: uuid
+          nullable: true
+        deleted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    FileList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileMetadata"
+        next_cursor:
+          type: string
+          nullable: true
+    FileVersion:
+      type: object
+      required: [id, file_id, version_number, size, created_by, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_id:
+          type: string
+          format: uuid
+        version_number:
+          type: integer
+          minimum: 1
+        size:
+          type: integer
+          format: int64
+        content_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        is_current:
+          type: boolean
+    VersionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileVersion"
+    VersionCompare:
+      type: object
+      required:
+        - file_id
+        - from_version_id
+        - to_version_id
+        - from_size
+        - to_size
+        - added_chunk_ids
+        - removed_chunk_ids
+        - unchanged_chunk_count
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        from_version_id:
+          type: string
+          format: uuid
+        to_version_id:
+          type: string
+          format: uuid
+        from_size:
+          type: integer
+          format: int64
+        to_size:
+          type: integer
+          format: int64
+        added_chunk_ids:
+          type: array
+          items:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+        removed_chunk_ids:
+          type: array
+          items:
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+        unchanged_chunk_count:
+          type: integer
+          minimum: 0
+    CreateShareRequest:
+      type: object
+      required: [access_level]
+      properties:
+        access_level:
+          type: string
+          enum: [read, write]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_public:
+          type: boolean
+          default: false
+        user_ids:
+          type: array
+          description: Rows inserted into share_permissions
+          items:
+            type: string
+            format: uuid
+    ShareCreated:
+      type: object
+      required: [id, file_id, token, access_level, is_public, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_id:
+          type: string
+          format: uuid
+        token:
+          type: string
+          description: Raw secret; only returned on create
+        access_level:
+          type: string
+          enum: [read, write]
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_public:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+    ShareAccess:
+      type: object
+      required: [file, access_level, is_public]
+      properties:
+        file:
+          $ref: "#/components/schemas/FileMetadata"
+        access_level:
+          type: string
+          enum: [read, write]
+        is_public:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    Node:
+      type: object
+      required: [id, name, base_url, status, last_heartbeat]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        base_url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [online, offline, draining, disabled]
+        last_heartbeat:
+          type: string
+          format: date-time
+        capacity_bytes:
+          type: integer
+          format: int64
+        used_bytes:
+          type: integer
+          format: int64
+    NodeList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    NodeHealth:
+      type: object
+      required: [node, replica_ok_count, replica_missing_count, heartbeat_stale]
+      properties:
+        node:
+          $ref: "#/components/schemas/Node"
+        replica_ok_count:
+          type: integer
+          minimum: 0
+        replica_missing_count:
+          type: integer
+          minimum: 0
+        heartbeat_stale:
+          type: boolean
+          description: True when last_heartbeat is older than the configured TTL
